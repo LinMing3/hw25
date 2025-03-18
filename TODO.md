@@ -5,9 +5,9 @@ cmakelist.txt
 main.cpp
 
 # 配环境
-- [ ] vscode的C++环境
-- [ ] cmakelist
-- [ ] g++
+- [x] vscode的C++环境
+- [x] cmakelist
+- [x] g++
 
 # 需要修改
 - [ ] main.cpp
@@ -33,3 +33,7 @@ python run.py [interactor_path] [data_path] [player_path] -d
 python run.py [interactor_path] [data_path] [player_path] -r 5 10
 ```
 
+# 其他
+- [ ] 安装todotree插件
+- [ ] 分任务
+- [ ] 第一次提交
