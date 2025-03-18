@@ -1,0 +1,3 @@
+C:/Users/LJR/Desktop/hw25/build/CMakeFiles/code_craft.dir
+C:/Users/LJR/Desktop/hw25/build/CMakeFiles/edit_cache.dir
+C:/Users/LJR/Desktop/hw25/build/CMakeFiles/rebuild_cache.dir

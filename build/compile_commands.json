@@ -1,0 +1,8 @@
+[
+{
+  "directory": "C:/Users/LJR/Desktop/hw25/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe   -g -std=gnu++17 -o CMakeFiles\\code_craft.dir\\main.cpp.obj -c C:\\Users\\LJR\\Desktop\\hw25\\main.cpp",
+  "file": "C:/Users/LJR/Desktop/hw25/main.cpp",
+  "output": "CMakeFiles/code_craft.dir/main.cpp.obj"
+}
+]
