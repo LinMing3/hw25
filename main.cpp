@@ -16,6 +16,7 @@ typedef struct Request_
     int object_id; // 请求的对象id
     int prev_id;   // 当前对象的前一个请求的id
     bool is_done;  // 是否完成
+
 } Request;
 
 // TODO:实现标签tag的管理
@@ -25,6 +26,7 @@ typedef struct Object_
     int replica[REP_NUM + 1]; // 副本,存储该副本在哪个磁盘
     int *unit[REP_NUM + 1];   // 对象块,存储该块在磁盘的位置
     int size;                 // 大小
+    int tag;                  // 标签
     int last_request_point;   // 最后请求的点
     bool is_delete;           // 是否删除
 } Object;
@@ -125,6 +127,7 @@ void delete_action()
 
     fflush(stdout);
 }
+
 // 写入对象
 // object_unit:对象块(存储该块在磁盘的位置)
 // disk_unit:磁盘指针(存储该块存储的对象id)
@@ -168,8 +171,8 @@ void do_object_write(int *object_unit, int *disk_unit, int size, int object_id)
     scanf("%d", &n_write);
     for (int i = 1; i <= n_write; i++)
     {
-        int id, size;
-        scanf("%d%d%*d", &id, &size);
+        int id, size, tag;
+        scanf("%d%d%%d", &id, &size,&tag);
         object[id].last_request_point = 0;
         for (int j = 1; j <= REP_NUM; j++)
         {   //副本j存储在磁盘(id+j)%N+1
@@ -177,6 +180,7 @@ void do_object_write(int *object_unit, int *disk_unit, int size, int object_id)
             // 分配存储空间,unit[j]现在指向一块可以存储(size + 1)个整数的内存区域
             object[id].unit[j] = static_cast<int *>(malloc(sizeof(int) * (size + 1)));
             object[id].size = size;
+            object[id].tag = tag;
             object[id].is_delete = false;
             do_object_write(object[id].unit[j], disk[object[id].replica[j]], size, id);
         }
