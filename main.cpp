@@ -3,7 +3,8 @@
 #include <cstdlib>
 #include <cmath>     // 包含 ceil 函数
 #include <algorithm> // 包含 std::max 函数
-#include <deque>    // 包含 std::deque
+#include <deque>     // 包含 std::deque
+#include <vector>
 
 using namespace std;
 
@@ -16,31 +17,39 @@ using namespace std;
 #define EXTRA_TIME (105)               // 额外时间
 const int OBJECT_BLOCKS = 5;
 
+#define MAX_TAG (16 + 1) // 标签数量上限（tag编号 1~16）
+int tag_disk_counter[MAX_TAG][MAX_DISK_NUM] = {0};
 
 #define PASS 1
 #define READ 2
 #define JUMP 3
 
 // 请求结构体
+// typedef struct Request_
+// {
+//     int object_id;                           // 请求的对象id
+//     int prev_id;                             // 当前对象的前一个请求的id
+//     bool is_done;                            // 是否完成
+//     bool object_block_id[OBJECT_BLOCKS + 1]; // 对象块id
+// } Request;
 typedef struct Request_
 {
-    int object_id; // 请求的对象id
-    int prev_id;   // 当前对象的前一个请求的id
-    bool is_done;  // 是否完成
-    bool object_block_id[OBJECT_BLOCKS + 1]; // 对象块id
+    int object_id;                           // 请求的对象 ID
+    bool object_block_id[OBJECT_BLOCKS + 1]; // 对象块读取状态，`true` 表示已读取
+    bool is_done;                            // 请求是否完成
 } Request;
 
 // TODO:实现标签tag的管理
 // 对象结构体
 typedef struct Object_
 {
-    int replica[REP_NUM + 1]; // 副本,存储该副本在哪个磁盘,replica[j]表示副本j存储在哪个磁盘
-    int *unit[REP_NUM + 1];   // 对象块,存储该块在磁盘的位置,unit[j][k]表示副本j的第k个对象块存储的磁盘单元位置
-    std:: deque<int> request_list;   //当前对象的读取请求,记录每个对象块的待读取次数,read_count[i]表示第i个request的id
-    int size;                 // 大小
-    int tag;                  // 标签
-    int last_request_point;   // 最近请求id
-    bool is_delete;           // 是否删除
+    int replica[REP_NUM + 1];     // 副本,存储该副本在哪个磁盘,replica[j]表示副本j存储在哪个磁盘
+    int *unit[REP_NUM + 1];       // 对象块,存储该块在磁盘的位置,unit[j][k]表示副本j的第k个对象块存储的磁盘单元位置
+    std::deque<int> request_list; // 当前对象的读取请求,记录每个对象块的待读取次数,read_count[i]表示第i个request的id
+    int size;                     // 大小
+    int tag;                      // 标签
+    // int last_request_point;       // 最近请求id
+    bool is_delete;               // 是否删除
 
 } Object;
 
@@ -69,9 +78,68 @@ void initialize_tag_disk_map()
     }
 }
 
-
-
 int current_occupation[MAX_DISK_NUM] = {0}; // 当前占用对象数
+
+int tail_empty[MAX_DISK_NUM] = {0}; // 记录每块磁盘尾部连续空闲长度
+void update_tail_empty(int disk_id)
+{
+    int count = 0;
+    for (int j = V; j >= 1; j--)
+    {
+        if (disk[disk_id][j] == 0)
+            count++;
+        else
+            break;
+    }
+    tail_empty[disk_id] = count;
+}
+
+// 大对象优先顺序写入
+bool try_write_continuous(int *object_unit, int *disk_unit, int size, int object_id, int disk_id)
+{
+
+    if (V - current_occupation[disk_id] < size)
+    {
+        return false;
+    }
+
+    for (int i = 1; i <= V - size + 1; i++)
+    {
+        bool ok = true;
+        for (int j = 0; j < size; j++)
+        {
+            if (disk_unit[i + j] != 0)
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+        {
+            for (int j = 0; j < size; j++)
+            {
+                disk_unit[i + j] = object_id;
+                object_unit[j + 1] = i + j;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+// 小对象优先碎片化写入
+bool try_write_fragmented(int *object_unit, int *disk_unit, int size, int object_id)
+{
+    int written = 0;
+    for (int i = 1; i <= V && written < size; i++)
+    {
+        if (disk_unit[i] == 0)
+        {
+            disk_unit[i] = object_id;
+            object_unit[++written] = i;
+        }
+    }
+    return written == size;
+}
 
 struct BestThree
 {
@@ -79,53 +147,69 @@ struct BestThree
     int best2;
     int best3;
 };
-BestThree find_best_disks_for_tag(int tag)
+BestThree find_best_disks_for_tag(int tag, int obj_size)
 {
-    BestThree best_disks = {0, 0, 0};
-    int main_disk = tag_disk_map[tag]; // 该标签优先存放的磁盘
+    int best1 = -1, best2 = -1, best3 = -1;
+    int score1 = INT_MIN, score2 = INT_MIN, score3 = INT_MIN;
 
-    int candidate_disks[REP_NUM]; // 存储候选磁盘
-    candidate_disks[0] = main_disk;
-    candidate_disks[1] = (main_disk == N) ? 1 : (main_disk + 1);
-    candidate_disks[2] = (main_disk == 1) ? N : (main_disk - 1); 
-    // 相邻磁盘（顺/逆时针）
-
-    // **Step 1: 在候选磁盘中寻找负载最轻的 3 个磁盘**
-    for (int i = 0; i < REP_NUM; i++)
+    for (int i = 1; i <= N; i++)
     {
-        int disk_id = candidate_disks[i];
+        int free_space = V - current_occupation[i];
+        if (free_space < obj_size)
+            continue;
 
-        //TODO: 优化选择磁盘的策略
-        if (disk_id < 1 || disk_id > N) {//不要continue,否则会导致best_disks.best1=0,先暂时放在1号磁盘
-            disk_id = 1;
-        }
+        int score = 0;
 
-        if (best_disks.best1 == 0 || current_occupation[disk_id] < current_occupation[best_disks.best1])
-        {
-            best_disks.best3 = best_disks.best2;
-            best_disks.best2 = best_disks.best1;
-            best_disks.best1 = disk_id;
+        // ① 当前占用越少越好（负载均衡）
+        score -= current_occupation[i]; // 越空闲越优
+
+        // ② 标签聚合加分：tag_disk_counter 已统计该标签在此盘已写入了多少
+        score += tag_disk_counter[tag][i] * 5;
+
+        // ③ 顺序写优先：尾部连续空块越多越优（阈值优化）
+        int tail_free = 0;
+        for (int j = V; j >= V - 10 && j >= 1; j--)
+        { // 只扫后10个块，快速判断
+            if (disk[i][j] == 0)
+                tail_free++;
+            else
+                break;
         }
-        else if (best_disks.best2 == 0 || current_occupation[disk_id] < current_occupation[best_disks.best2])
+        if (tail_free >= obj_size)
+            score += 20; // 有连续空区域就给 bonus
+
+        // Top 3 排名更新
+        if (score > score1)
         {
-            best_disks.best3 = best_disks.best2;
-            best_disks.best2 = disk_id;
+            score3 = score2;
+            best3 = best2;
+            score2 = score1;
+            best2 = best1;
+            score1 = score;
+            best1 = i;
         }
-        else if (best_disks.best3 == 0 || current_occupation[disk_id] < current_occupation[best_disks.best3])
+        else if (score > score2)
         {
-            best_disks.best3 = disk_id;
+            score3 = score2;
+            best3 = best2;
+            score2 = score;
+            best2 = i;
+        }
+        else if (score > score3)
+        {
+            score3 = score;
+            best3 = i;
         }
     }
 
-    if (best_disks.best1 == 0 || best_disks.best2 == 0 || best_disks.best3 == 0) {
-        printf("Error: Invalid disk selection! best1: %d, best2: %d, best3: %d\n",
-               best_disks.best1, best_disks.best2, best_disks.best3);
+    if (best1 <= 0 || best2 <= 0 || best3 <= 0)
+    {
+        printf("Error: Cannot find 3 valid disks for tag %d\n", tag);
         exit(1);
     }
 
-    return best_disks;
+    return {best1, best2, best3};
 }
-
 
 // 时间片
 void timestamp_action()
@@ -157,7 +241,7 @@ void do_object_delete(const int *object_unit, int *disk_unit, int size)
 void delete_action()
 {
     int n_delete;                   // 删除数
-    int abort_num = 0;              // 取消读取数
+                 
     static int _id[MAX_OBJECT_NUM]; // 对象id
 
     // 读取删除数
@@ -169,40 +253,40 @@ void delete_action()
     }
 
     // 取消读取数
+    int unfinished_count = 0;// 取消读取数
     for (int i = 1; i <= n_delete; i++)
-    {
-        int id = _id[i];
-        int current_id = object[id].last_request_point;
-        while (current_id != 0)
+    { 
+        // 遍历对象的请求队列
+        for (int request_id : object[_id[i]].request_list)
         {
-            if (request[current_id].is_done == false)
+           
+            if (!request[request_id].is_done)
             {
-                abort_num++;
+                unfinished_count++; // 统计未完成的请求
             }
-            // 当前对象的前一个请求id
-            current_id = request[current_id].prev_id;
         }
     }
-
     // 打印取消读取数
-    printf("%d\n", abort_num);
+    printf("%d\n", unfinished_count);
     for (int i = 1; i <= n_delete; i++)
     {
         int id = _id[i];
-        // 当前对象的最近请求id
-        int current_id = object[id].last_request_point;
-        while (current_id != 0)
+        // 输出取消读取请求
+        while (object[id].request_list.size() > 0)
         {
+            int current_id = object[id].request_list.front();
             if (request[current_id].is_done == false)
             {
                 printf("%d\n", current_id);
             }
-            current_id = request[current_id].prev_id;
+            object[id].request_list.pop_front();
         }
         // 删除对象
         for (int j = 1; j <= REP_NUM; j++)
         {                                                                 // 删除副本j
             current_occupation[object[id].replica[j]] -= object[id].size; // 更新磁盘占用
+            int disk_id = object[id].replica[j];
+            tag_disk_counter[object[id].tag][disk_id] -= object[id].size; // 更新标签磁盘占用
             do_object_delete(object[id].unit[j], disk[object[id].replica[j]], object[id].size);
         }
         object[id].is_delete = true;
@@ -211,162 +295,74 @@ void delete_action()
     fflush(stdout);
 }
 
-// 写入对象
-// object_unit:对象块(存储该块在磁盘的位置)
-// disk_unit:磁盘指针(存储该块存储的对象id)
-// size:大小(对象块大小)
-// object_id:对象id
-// : 优化写入算法
-// void do_object_write(int *object_unit, int *disk_unit, int size, int object_id)
-// {
-
-//     int current_write_point = 0; // 当前写入的对象块
-//     // 遍历磁盘
-//     for (int i = 1; i <= V; i++)
-//     {
-//         // 磁盘单元为空
-//         if (disk_unit[i] == 0)
-//         {
-//             // 写入对象块
-//             disk_unit[i] = object_id;
-//             current_occupation[i] += size; // 更新磁盘占用
-//             // unit[j][current_write_point]表示副本j的第current_write_point个对象块存储的磁盘单元位置
-//             object_unit[++current_write_point] = i;
-//             if (current_write_point == size)
-//             {
-//                 break;
-//             }
-//         }
-//     }
-
-//     assert(current_write_point == size);
-// }
-
-int find_best_fit_space(int disk_id, int size)
-{
-    int best_start = -1;
-    int min_gap = INT_MAX;
-
-    for (int i = 1; i <= V - size + 1; i++)
-    {
-        if (disk[disk_id][i] == 0) // 发现空闲块
-        {
-            int gap_size = 0;
-            for (int j = 0; j < size; j++)
-            {
-                if (disk[disk_id][i + j] == 0)
-                    gap_size++;
-                else
-                    break;
-            }
-
-            if (gap_size == size) // 完美匹配
-            {
-                return i;
-            }
-            else if (gap_size > size && gap_size < min_gap)
-            {
-                min_gap = gap_size;
-                best_start = i;
-            }
-        }
-    }
-
-    return best_start; // 返回找到的最合适的存储位置
-}
-
 
 void do_object_write(int *object_unit, int *disk_unit, int size, int object_id, int disk_id)
 {
-    int best_start = find_best_fit_space(disk_id, size);
+    int start_pos = -1;
+    bool ok = false;
 
-    if (best_start == -1)
+    if (size >= 3)
     {
-        printf("Error: No available space on disk %d for object %d\n", disk_id, object_id);
-        exit(1);
+        ok = try_write_continuous(object_unit, disk_unit, size, object_id, disk_id);
+    }
+    else
+    {
+        // 小对象优先碎片利用
+        ok = try_write_fragmented(object_unit, disk_unit, size, object_id);
+        if (!ok)
+        {
+            // fallback 尝试顺序写
+            ok = try_write_continuous(object_unit, disk_unit, size, object_id, disk_id);
+        }
     }
 
-    for (int j = 0; j < size; j++)
+    if (!ok)
     {
-        disk_unit[best_start + j] = object_id;//disk_unit[i]表示磁盘i的第i个存储单元存储的对象id
-        object_unit[j + 1] = best_start + j;
+        printf("Error: disk %d cannot store object %d (size %d)\n", disk_id, object_id, size);
+        exit(1);
     }
 }
 
-
-
-
-// 写入操作
-// n_write：代表这一时间片写入对象的个数。输入数据保证总写入次数小于等于100000。
-// 接下来n_write 行，每行三个数obj_id[i]、obj_size[i]、obj_tag[i]，代表当前时间片写入的对象编号，对象大小，对象标签编号。输入数据保证obj_id 为1开始每次递增1的整数，且1≤𝑜𝑏𝑗_𝑠𝑖𝑧𝑒[𝑖]≤5， 1≤𝑜𝑏𝑗_𝑡𝑎𝑔 [𝑖]≤𝑀
-// 输出包含4∗𝑛_𝑤𝑟𝑖𝑡𝑒行，每4行代表一个对象：
-// 第一行一个整数obj_id[i]，表示该对象的对象编号。
-// 接下来一行，第一个整数rep[1] 表示该对象的第一个副本写入的硬盘编号，接下来对象大小(obj_size) 个整数unit[1][j]，代表第一个副本第𝑗个对象块写入的存储单元编号。
-// 第三行，第四行格式与第二行相同，为写入第二，第三个副本的结果。
-// void write_action()
-// {
-//     int n_write;
-//     scanf("%d", &n_write);
-//     for (int i = 1; i <= n_write; i++)
-//     {
-//         int id, size, tag;
-//         scanf("%d%d%%d", &id, &size, &tag);
-//         object[id].last_request_point = 0;
-//         object[id].tag = tag;
-//         object[id].is_delete = false;
-//         object[id].size = size;
-//         for (int j = 1; j <= REP_NUM; j++)
-//         { // 副本j存储在磁盘(id+j)%N+1
-//             object[id].replica[j] = (id + j) % N + 1;
-//             // 分配存储空间,unit[j]现在指向一块可以存储(size + 1)个整数的内存区域
-//             object[id].unit[j] = static_cast<int *>(malloc(sizeof(int) * (size + 1)));
-//             do_object_write(object[id].unit[j], disk[object[id].replica[j]], size, id);
-//         }
-
-//         printf("%d\n", id);
-//         for (int j = 1; j <= REP_NUM; j++) // 输出副本j的存储情况
-//         {
-//             printf("%d", object[id].replica[j]); // 输出副本j存储在哪个磁盘
-//             for (int k = 1; k <= size; k++)      // 输出副本j的unit[j][k],副本j第k个对象块写入的存储单元编号
-//             {
-//                 printf(" %d", object[id].unit[j][k]);
-//             }
-//             printf("\n");
-//         }
-//     }
-
-//     fflush(stdout);
-// }
 
 void write_action()
 {
     int n_write;
     scanf("%d", &n_write);
-    
+
     for (int i = 1; i <= n_write; i++)
     {
         int id, size, tag;
         scanf("%d%d%d", &id, &size, &tag);
-        object[id].last_request_point = 0;
+
+        // object[id].last_request_point = 0;
         object[id].tag = tag;
         object[id].is_delete = false;
         object[id].size = size;
 
-        // **Step 1: 选择最佳存储磁盘**
-        BestThree best_disks = find_best_disks_for_tag(tag);
+        // Step 1: 选择最佳副本磁盘（三个磁盘）
+        BestThree best_disks = find_best_disks_for_tag(tag, size);
         int chosen_disks[REP_NUM] = {best_disks.best1, best_disks.best2, best_disks.best3};
 
-        // **Step 2: 在选定磁盘中查找最佳存储单元并写入**
+        printf("%d\n", id); // 输出对象编号
+
+        // Step 2: 在磁盘上为每个副本写入
         for (int j = 1; j <= REP_NUM; j++)
         {
-            object[id].replica[j] = chosen_disks[j - 1];
+            int disk_id = chosen_disks[j - 1];
+
+            object[id].replica[j] = disk_id;
             object[id].unit[j] = static_cast<int *>(malloc(sizeof(int) * (size + 1)));
 
-            do_object_write(object[id].unit[j], disk[chosen_disks[j - 1]], size, id, chosen_disks[j - 1]);
+            // 智能写入（根据对象大小自动碎片写或连续写）
+            do_object_write(object[id].unit[j], disk[disk_id], size, id, disk_id);
+
+            // 写入成功后更新全局信息
+            current_occupation[disk_id] += size;
+            tag_disk_counter[tag][disk_id] += size;
+            update_tail_empty(disk_id); // 更新该磁盘尾部连续空块
         }
 
-        // **Step 3: 输出存储位置**
-        printf("%d\n", id);
+        // Step 3: 输出写入位置（4行格式）
         for (int j = 1; j <= REP_NUM; j++)
         {
             printf("%d", object[id].replica[j]);
@@ -381,22 +377,19 @@ void write_action()
     fflush(stdout);
 }
 
+// 优化读取算法
 
-
-
-//优化读取算法
-
-//磁头跳跃,磁头disk_id跳跃到的存储单元编号,0表示不执行jump
+// 磁头跳跃,磁头disk_id跳跃到的存储单元编号,0表示不执行jump
 int jump_to(int disk_id)
 {
     int current_position = disk_point[disk_id];
     int count = 0;
     int position = current_position;
     // 从当前磁头位置向前遍历磁盘存储单元
-    for (int i = 1; i <= V/3; i++)
+    for (int i = 1; i <= V / 3; i++)
     {
         position = (current_position + i) % V; // 循环计算位置
-        if (disk[disk_id][position] != 0)                  // 找到最近的非空位置
+        if (disk[disk_id][position] != 0)      // 找到最近的非空位置
         {
             count++;
         }
@@ -407,71 +400,34 @@ int jump_to(int disk_id)
     }
     return 0;
 }
+void update_request_status(int request_id, int block_id, int object_size) {
+    request[request_id].object_block_id[block_id] = true;
+
+    // 检查是否所有块都已读取
+    bool all_blocks_read = true;
+    for (int i = 1; i <= object_size; i++) {
+        if (!request[request_id].object_block_id[i]) {
+            all_blocks_read = false;
+            break;
+        }
+    }
+
+    // 如果所有块都已读取，标记请求为完成
+    if (all_blocks_read) {
+        request[request_id].is_done = true;
+    }
+}
 
 // 最早的请求
 int get_earliest_request(int object_id)
 {
-    if(object[object_id].request_list.empty()){
+    if (object[object_id].request_list.empty())
+    {
         return 0;
     }
     int current_id = object[object_id].request_list.front();
     return current_id;
 }
-
-//磁头是pass还是read,磁头disk_id,PASS表示pass,READ表示read,0表示不执行
-int pass_or_read(int disk_id,int& re_id)
-{
-    int obj_id = disk[disk_id][disk_point[disk_id]];
-    if(obj_id==0){
-        return PASS;
-    }
-    re_id = get_earliest_request(obj_id);
-    if(re_id==0){
-         return PASS;
-    }
-    int rep_id = 0;
-    for(int i=1;i<=REP_NUM;i++){
-        if(object[obj_id].replica[i]==disk_id){
-            rep_id=i;
-            break;
-        }
-    }
-    if (rep_id > 0)
-    {
-        int obj_block_id=0;
-        for(int i=1;i<=object[obj_id].size;i++){
-            if(object[obj_id].unit[rep_id][i]==disk_point[disk_id]){
-                obj_block_id=i;
-                break;
-            }
-        }
-        if (obj_block_id > 0)
-        {
-            for (int req_id : object[obj_id].request_list)
-            {
-                if(request[req_id].object_block_id[obj_block_id]==false){
-                    request[req_id].object_block_id[obj_block_id] = true;
-                    request[req_id].is_done = true;
-                    for(int i=1;i<=object[obj_id].size;i++){
-                        if(request[req_id].object_block_id[i]==false){
-                            request[req_id].is_done = false;
-                            re_id = req_id;
-                            return READ;
-                        }
-                    }                    
-                    return READ;
-                }
-            }
-            
-
-            
-        }
-    }
-    return PASS;
-}
-
-
-
 // read的消耗
 int read_consume(int disk_id)
 {
@@ -483,59 +439,140 @@ int read_consume(int disk_id)
     return std::max(16, ceilValue);
 }
 
-// 磁头移动,磁头disk_id表示第disk_id个磁头
-void disk_move(int disk_id, int &n_request_complete, int *request_complete)
+// 磁头是pass还是read,磁头disk_id,PASS表示pass,READ表示read,0表示不执行
+int pass_or_read(int disk_id, int &n_request_complete, std::vector<int> &request_complete)
 {
-    int left_G = G;
+    int obj_id = disk[disk_id][disk_point[disk_id]];
+    if (obj_id == 0)
+    {
+        return PASS;
+    }
+
+    // 获取对象的最早请求
+    if (object[obj_id].request_list.empty())
+    {
+        return PASS; // 没有未完成的请求
+    }
+    int request_id = object[obj_id].request_list.front();
+
+    // 找到当前块在对象中的位置
+    int rep_id = 0, block_id = 0;
+    for (int i = 1; i <= REP_NUM; i++)
+    {
+        if (object[obj_id].replica[i] == disk_id)
+        {
+            rep_id = i;
+            break;
+        }
+    }
+    for (int i = 1; i <= object[obj_id].size; i++)
+    {
+        if (object[obj_id].unit[rep_id][i] == disk_point[disk_id])
+        {
+            block_id = i;
+            break;
+        }
+    }
+
+    if (block_id > 0)
+    {
+        // 更新请求状态
+        update_request_status(request_id, block_id, object[obj_id].size);
+
+        // 如果请求完成，移出请求队列
+        if (request[request_id].is_done)
+        {
+            n_request_complete++;
+            request_complete.push_back(request_id);
+            object[obj_id].request_list.pop_front();
+        }
+    }
+
+    return READ;
+}
+
+
+
+// 磁头移动,磁头disk_id表示第disk_id个磁头
+void disk_move(int disk_id, int &n_request_complete, std::vector<int> &request_complete)
+{
+    int left_G = G; // 剩余令牌数
+
+    // Step 1: 尝试执行 Jump 动作
     int jump = jump_to(disk_id);
     if (jump)
     {
         printf("j %d\n", jump);
-        disk_point[disk_id] = jump;
+        disk_point[disk_id] = jump; // 更新磁头位置
         disk_pre_move[disk_id] = JUMP;
-        disk_pre_token[disk_id] = G;
+        disk_pre_token[disk_id] = G; // Jump 消耗所有令牌
         return;
     }
+
+    // Step 2: 循环处理 Pass 和 Read 动作，直到令牌耗尽
     while (left_G > 0)
     {
-        int re_id = 0;
-        int pass = pass_or_read(disk_id, re_id);
-        if (pass == PASS)
+        
+        int obj_id = disk[disk_id][disk_point[disk_id]];
+        if (obj_id == 0||read_consume(disk_id) > left_G)
         {
+            // 磁头指向空闲区域，执行 Pass 动作
             printf("p");
-            left_G--;
-            disk_point[disk_id]++;
-            if(disk_point[disk_id]>V){
-                disk_point[disk_id]=1;
+            left_G--;              // Pass 消耗 1 个令牌
+            disk_point[disk_id]++; // 磁头移动到下一个存储单元
+            if (disk_point[disk_id] > V)
+            {
+                disk_point[disk_id] = 1; // 磁头循环回到起点
             }
             disk_pre_move[disk_id] = PASS;
             disk_pre_token[disk_id] = 1;
         }
-        else if (pass == READ)
-        {
-            printf("r");
-            if (request[re_id].is_done = true)
-            {
-                n_request_complete++;
-                request_complete[n_request_complete]=re_id;
-                object[request[re_id].object_id].request_list.pop_front();
-            }
-            int consume = read_consume(disk_id);
-            left_G -= consume;
-            disk_point[disk_id]++;
-            if (disk_point[disk_id] > V)
-            {
-                disk_point[disk_id] = 1;
-            }
-            disk_pre_move[disk_id] = READ;
-            disk_pre_token[disk_id] = consume;
-        }
         else
         {
-            printf("#\n");
-            return;
+            // 磁头指向对象，执行 Read 动作
+            int action = pass_or_read(disk_id, n_request_complete, request_complete);
+            if (action == PASS)
+            {
+                // 执行 Pass 动作
+                printf("p");
+                left_G--;              // Pass 消耗 1 个令牌
+                disk_point[disk_id]++; // 磁头移动到下一个存储单元
+                if (disk_point[disk_id] > V)
+                {
+                    disk_point[disk_id] = 1; // 磁头循环回到起点
+                }
+                disk_pre_move[disk_id] = PASS;
+                disk_pre_token[disk_id] = 1;
+            }
+            else if (action == READ)
+            {
+                // 执行 Read 动作
+                printf("r");
+                
+                int consume = read_consume(disk_id); // 计算 Read 动作的令牌消耗
+                left_G -= consume;                   // 减少剩余令牌
+                disk_point[disk_id]++;               // 磁头移动到下一个存储单元
+                if (disk_point[disk_id] > V)
+                {
+                    disk_point[disk_id] = 1; // 磁头循环回到起点
+                }
+                disk_pre_move[disk_id] = READ;
+                disk_pre_token[disk_id] = consume;
+            }
         }
+        
     }
+    
+    printf("#\n");
+
+}
+void initialize_request(int request_id, int object_id, int object_size) {
+    request[request_id].object_id = object_id;
+    request[request_id].is_done = false;
+    for (int i = 1; i <= object_size; i++) {
+        request[request_id].object_block_id[i] = false;
+    }
+    object[object_id].request_list.push_back(request_id);
 }
 
 // 读取操作
@@ -549,28 +586,23 @@ void read_action()
     for (int i = 1; i <= n_read; i++)
     {
         scanf("%d%d", &request_id, &object_id);
-        request[request_id].object_id = object_id;                          // 请求request_id请求的对象id
-        request[request_id].prev_id = object[object_id].last_request_point; // 请求request_id请求的对象的前一个请求的id
-        object[object_id].last_request_point = request_id;                  // 对象object_id的最近请求id
-        request[request_id].is_done = false;                                // 请求request_id是否完成
-        object[object_id].request_list.push_back(request_id);                    // 对象object_id的读取请求
+        initialize_request(request_id, object_id, object[object_id].size);
     }
 
-    int n_rsp;
-    int rsp_id[MAX_REQUEST_NUM];
+    int n_rsp=0;
+    std::vector<int> rsp_id;
+    rsp_id.push_back(0);
 
-    // 前𝑁行是磁头的运动输出，第𝑖行action[i] 代表编号为𝑖的硬盘所对应的磁头的运动方式：
-    //  1. 该磁头执行了 "Jump"动作：这一行输出空格隔开的两个字符串，第一个字符串固定为"j"；第 二个字符串为一个整数，表示跳跃到的存储单元编号。
-    //  2. 该磁头没有执行 "Jump"动作：这一行输出一个字符串，仅包含字符 'p'、 'r'、 '#'，代表该磁头 在当前时间片的所有动作，每一个字符代表一个动作。其中 'p'字符代表 "Pass"动作， 'r'字符代表 "Read"动作。运动结束用字符 '#'表示。
     // 每个磁头的运动输出
     for (int i = 1; i <= N; i++)
     {
         disk_move(i, n_rsp, rsp_id);
     }
 
-    // 读取完成的请求个数
     //   n_rsp：代表当前时间片上报读取完成的请求个数。
     //  接下来n_rsp 行，每行1 个数req_id[i]，代表本时间片上报读取完成的读取请求编号。
+
+    printf("%d\n", n_rsp);
     for (int i = 1; i <= n_rsp; i++)
     {
         printf("%d\n", rsp_id[i]);
@@ -599,7 +631,7 @@ int main()
     // 读取输入
     scanf("%d%d%d%d%d", &T, &M, &N, &V, &G);
 
-    // 前𝑚行中，第𝑖行第𝑗个数𝑓𝑟𝑒_𝑑𝑒𝑙[𝑖][𝑗]表示时间片编号𝑖𝑑满足 (𝑗−1)∗1800+1≤𝑖𝑑 ≤𝑗∗1800的情况下，所有删除操作中对象标签为𝑖的对象大小之和。 
+    // 前𝑚行中，第𝑖行第𝑗个数𝑓𝑟𝑒_𝑑𝑒𝑙[𝑖][𝑗]表示时间片编号𝑖𝑑满足 (𝑗−1)∗1800+1≤𝑖𝑑 ≤𝑗∗1800的情况下，所有删除操作中对象标签为𝑖的对象大小之和。
     for (int i = 1; i <= M; i++)
     {
         for (int j = 1; j <= (T - 1) / FRE_PER_SLICING + 1; j++)
@@ -607,7 +639,7 @@ int main()
             scanf("%*d");
         }
     }
-    // 接下来𝑚行，第𝑖行第𝑗个数𝑓𝑟𝑒_𝑤𝑟𝑖𝑡𝑒[𝑖][𝑗] 表示时间片编号𝑖𝑑满足(𝑗−1)∗1800 + 1≤𝑖𝑑 ≤𝑗∗ 1800的情况下，所有写入操作中对象标签为𝑖的对象大小之和。 
+    // 接下来𝑚行，第𝑖行第𝑗个数𝑓𝑟𝑒_𝑤𝑟𝑖𝑡𝑒[𝑖][𝑗] 表示时间片编号𝑖𝑑满足(𝑗−1)∗1800 + 1≤𝑖𝑑 ≤𝑗∗ 1800的情况下，所有写入操作中对象标签为𝑖的对象大小之和。
     for (int i = 1; i <= M; i++)
     {
         for (int j = 1; j <= (T - 1) / FRE_PER_SLICING + 1; j++)
@@ -615,7 +647,7 @@ int main()
             scanf("%*d");
         }
     }
-    // 接下来𝑚行，第𝑖行第𝑗个数𝑓𝑟𝑒_𝑟𝑒𝑎𝑑[𝑖][𝑗] 表示时间片编号𝑖𝑑满足(𝑗−1)∗1800 + 1≤𝑖𝑑 ≤𝑗∗ 1800的情况下，所有读取操作中对象标签为𝑖的对象大小之和，同一个对象的多次读取会重复 计算。 
+    // 接下来𝑚行，第𝑖行第𝑗个数𝑓𝑟𝑒_𝑟𝑒𝑎𝑑[𝑖][𝑗] 表示时间片编号𝑖𝑑满足(𝑗−1)∗1800 + 1≤𝑖𝑑 ≤𝑗∗ 1800的情况下，所有读取操作中对象标签为𝑖的对象大小之和，同一个对象的多次读取会重复 计算。
     for (int i = 1; i <= M; i++)
     {
         for (int j = 1; j <= (T - 1) / FRE_PER_SLICING + 1; j++)
@@ -633,6 +665,22 @@ int main()
         disk_point[i] = 1;
         disk_pre_move[i] = PASS;
         disk_pre_token[i] = 0;
+    }
+    // 初始化map
+    initialize_tag_disk_map();
+
+    // 初始化tail_empty
+    for (int i = 1; i <= N; i++)
+    {
+        int count = 0;
+        for (int j = V; j >= 1; j--)
+        {
+            if (disk[i][j] == 0)
+                count++;
+            else
+                break;
+        }
+        tail_empty[i] = count;
     }
 
     // 主循环
