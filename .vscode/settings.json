@@ -48,6 +48,8 @@
         "text_encoding": "cpp",
         "typeinfo": "cpp",
         "variant": "cpp",
-        "cassert": "cpp"
+        "cassert": "cpp",
+        "iostream": "cpp",
+        "istream": "cpp"
     }
 }
