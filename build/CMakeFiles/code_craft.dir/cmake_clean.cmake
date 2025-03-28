@@ -5,6 +5,8 @@ file(REMOVE_RECURSE
   "C:/Users/LJR/Desktop/hw25/libcode_craft.dll.a"
   "CMakeFiles/code_craft.dir/main.cpp.obj"
   "CMakeFiles/code_craft.dir/main.cpp.obj.d"
+  "CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.obj"
+  "CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.obj.d"
 )
 
 # Per-language clean rules from dependency scanning.

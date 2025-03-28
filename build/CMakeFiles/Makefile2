@@ -84,12 +84,12 @@ clean: CMakeFiles/code_craft.dir/clean
 CMakeFiles/code_craft.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=C:\Users\LJR\Desktop\hw25\build\CMakeFiles --progress-num=1,2 "Built target code_craft"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=C:\Users\LJR\Desktop\hw25\build\CMakeFiles --progress-num=1,2,3 "Built target code_craft"
 .PHONY : CMakeFiles/code_craft.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/code_craft.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start C:\Users\LJR\Desktop\hw25\build\CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start C:\Users\LJR\Desktop\hw25\build\CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 CMakeFiles/code_craft.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start C:\Users\LJR\Desktop\hw25\build\CMakeFiles 0
 .PHONY : CMakeFiles/code_craft.dir/rule
@@ -101,7 +101,7 @@ code_craft: CMakeFiles/code_craft.dir/rule
 # codegen rule for target.
 CMakeFiles/code_craft.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=C:\Users\LJR\Desktop\hw25\build\CMakeFiles --progress-num=1,2 "Finished codegen for target code_craft"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=C:\Users\LJR\Desktop\hw25\build\CMakeFiles --progress-num=1,2,3 "Finished codegen for target code_craft"
 .PHONY : CMakeFiles/code_craft.dir/codegen
 
 # clean rule for target.

@@ -152,6 +152,30 @@ main.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/main.cpp.s
 .PHONY : main.cpp.s
 
+tempCodeRunnerFile.obj: tempCodeRunnerFile.cpp.obj
+.PHONY : tempCodeRunnerFile.obj
+
+# target to build an object file
+tempCodeRunnerFile.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.obj
+.PHONY : tempCodeRunnerFile.cpp.obj
+
+tempCodeRunnerFile.i: tempCodeRunnerFile.cpp.i
+.PHONY : tempCodeRunnerFile.i
+
+# target to preprocess a source file
+tempCodeRunnerFile.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.i
+.PHONY : tempCodeRunnerFile.cpp.i
+
+tempCodeRunnerFile.s: tempCodeRunnerFile.cpp.s
+.PHONY : tempCodeRunnerFile.s
+
+# target to generate assembly for a file
+tempCodeRunnerFile.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\code_craft.dir\build.make CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.s
+.PHONY : tempCodeRunnerFile.cpp.s
+
 # Help Target
 help:
 	@echo The following are some of the valid targets for this Makefile:
@@ -164,6 +188,9 @@ help:
 	@echo ... main.obj
 	@echo ... main.i
 	@echo ... main.s
+	@echo ... tempCodeRunnerFile.obj
+	@echo ... tempCodeRunnerFile.i
+	@echo ... tempCodeRunnerFile.s
 .PHONY : help
 
 

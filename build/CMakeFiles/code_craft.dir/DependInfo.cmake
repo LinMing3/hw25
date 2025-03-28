@@ -9,6 +9,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "C:/Users/LJR/Desktop/hw25/main.cpp" "CMakeFiles/code_craft.dir/main.cpp.obj" "gcc" "CMakeFiles/code_craft.dir/main.cpp.obj.d"
+  "C:/Users/LJR/Desktop/hw25/tempCodeRunnerFile.cpp" "CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.obj" "gcc" "CMakeFiles/code_craft.dir/tempCodeRunnerFile.cpp.obj.d"
   )
 
 # Targets to which this target links which contain Fortran sources.
