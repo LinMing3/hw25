@@ -29,6 +29,7 @@ int tag_disk_counter[MAX_TAG][MAX_DISK_NUM] = {0};
 #define PASS 1
 #define READ 2
 #define JUMP 3
+#define STOP 4
 
 typedef struct Request_
 {
@@ -94,7 +95,8 @@ struct tag_store_disk
     int disk_start[MAX_DISK_NUM];
 };
 
-tag_store_disk tag_disk_info[MAX_TAG] = {}; // 每个tag存储在哪些磁盘上
+tag_store_disk tag_disk_info[MAX_TAG] = {}; // 每个tag存储在哪些磁盘上//预存储
+bool tag_disk_have_stored[MAX_TAG][MAX_DISK_NUM] = {}; //记录每个tag在哪些磁盘上有存放//不考虑删除带来的tag消失情况，只是一味地开空间
 
 // 用于记录磁盘上某个标签段的信息
 struct DiskTagSegment
@@ -108,15 +110,15 @@ struct DiskTagSegment
     DiskTagSegment *next; // 后一段
 
     DiskTagSegment(int tag, int start, int end, int gap)
-        : tag_id(tag), start_index(start), usage_end_index(end),
-          prev(nullptr), next(nullptr), gap(gap) {}
+            : tag_id(tag), start_index(start), usage_end_index(end),
+            prev(nullptr), next(nullptr), gap(gap) {}
 }; //!!!要记得更新gap和available等动态值哦
 
 // 定义一个二维数组，存储每个磁盘的标签信息,该磁盘要放入哪个标签就对数组的哪个位置进行DiskTagInfo的赋值
 // 对于每个磁盘，维护一个双向循环链表的头指针
 DiskTagSegment *disk_head[MAX_DISK_NUM] = {};
 // 当前每个磁盘已分配的标签数量
-int disk_tag_count[MAX_DISK_NUM] = {0};
+int disk_seg_tag_count[MAX_DISK_NUM] = {0};
 
 // 时间片
 void timestamp_action()
@@ -287,56 +289,6 @@ int get_tag(int disk_id, int pos)
     return most_frequent_tag;
 }
 
-// // TODO:可能有用：更新每个磁盘中尾部连续位置长度
-// void update_tail_empty(int disk_id)
-// {
-//     int count = 0;
-//     for (int j = V; j >= 1; j--)
-//     {
-//         if (disk[disk_id][j] == 0)
-//             count++;
-//         else
-//             tail_start[disk_id] = j + 1;
-//         break;
-//     }
-//     tail_empty[disk_id] = count;
-// }
-
-// // TODO:可能有用：检查指定磁盘和标签是否有足够空间
-// int is_space_available_for_tag(int disk_id, int tag_id, int size)
-// {
-//     // 每个磁盘上的总空间
-//     int total_disk_space = V * N;
-
-//     // 每个标签在磁盘上分配的空间
-//     int space_per_tag = total_disk_space / M * 3;
-
-//     // 计算标签在磁盘上的起始位置和结束位置
-//     int tag_start = (tag_id - 1) * space_per_tag + 1;
-//     int tag_end = tag_id * space_per_tag;
-
-//     // 计算磁盘上当前标签的剩余空间
-//     int remaining_space = 0;
-
-//     // 遍历磁盘上的空间，检查该标签的剩余空间
-//     for (int i = tag_start; i <= tag_end; i++)
-//     {
-//         if (disk[disk_id][i] == 0)
-//         { // 如果当前位置没有被占用
-//             remaining_space++;
-//         }
-//     }
-
-//     // 如果剩余空间大于或等于要存储的对象大小，返回1表示空间足够
-//     if (remaining_space >= size)
-//     {
-//         return 1;
-//     }
-
-//     // 否则返回0表示空间不足
-//     return 0;
-// }
-
 // TODO:选择空余空间最多的磁盘，加入标签链表的连续位置，并且修改有哪些tag存放的磁盘
 int allocate_each_object(int object_id, int size, int tag, int replica_num)
 {
@@ -356,20 +308,20 @@ int allocate_each_object(int object_id, int size, int tag, int replica_num)
         // TODO：选择剩余空间最多/磁盘上标签段种类最少
         for (int index = 1; index <= N; index++)
         {
-            if (tag_disk_info[tag].disk_unit[index] == 0)
+            if(index==origin_disk) continue;//如果是排除的origin，就继续进行扫射
+            if (!tag_disk_have_stored[tag][index])//该磁盘如果没有存储该标签
             {
-                break;
+                continue;
             }
-            int disk_num = tag_disk_info[tag].disk_unit[index];
-            if (disk_available[disk_num] >= size)
+            if (disk_available[index] >= size && !object[object_id].is_used_disk[index])
             {
-                return disk_num;
+                return index;
             }
         }
         // 到这里就发现没有磁盘有该标签，顺序扫，选择有空的磁盘//TODO:可优化哈
         for (int i = 1; i <= N; i++)
         {
-            if (disk_available[i] >= size)
+            if (disk_available[i] >= size && !object[object_id].is_used_disk[i])
             {
                 return i;
             }
@@ -401,32 +353,45 @@ void insert_segment(int disk_id, DiskTagSegment *new_seg)
     head->prev = new_seg;
 }
 
-DiskTagSegment *insert_middle_segment(int disk_id, DiskTagSegment *current_seg, int size, int tag)
+int available_place(int a, int b)
+{ // ab是磁盘中的点//V是单个磁盘的总块数//计算的是gap哦,在从小到大顺序下a在b前
+    if (a <= b)
+    {
+        return b - a - 1;
+    }
+    else
+    {
+        return V - a + b - 1;
+    }
+}
+
+DiskTagSegment *insert_middle_segment(int disk_id, DiskTagSegment *current_seg, int need_size, int tag)
 {
     // 1) 计算插入位置
     int gap = current_seg->gap;
     int gap_start = current_seg->usage_end_index + 1;
-    int offset = (gap - size) / 2;
+    int offset = (gap - need_size) / 2;
     int new_start = gap_start + offset;
     if (new_start > V)
         new_start -= V;
-    int new_end = new_start + size - 1;
+    int new_end = new_start + need_size - 1;
     if (new_end > V)
         new_end -= V;
-    int new_gap = available_place(new_end, current_seg->next->g)
+    int new_gap = available_place(new_end, current_seg->next->start_index);
 
-        // 2) 创建新段
-        DiskTagSegment *new_seg = new DiskTagSegment(tag, new_start, new_end, );
-    new_seg->tag_id = tag;
-    new_seg->start_index = gap_start;
-    new_seg->usage_end_index = gap_start - 1; // 还未写任何数据
-    new_seg->gap = 0;                         // 等写完后再计算
+    //更新一下前一段的gap
+    current_seg->gap= available_place(current_seg->usage_end_index,new_start);
+
+    // 2) 创建新段
+    DiskTagSegment *new_seg = new DiskTagSegment(tag, new_start, new_end, new_gap);
 
     // 3) 插入环形链表 (new_seg 在 current_seg 和 current_seg->next 之间)
+    current_seg->next->prev = new_seg;
     new_seg->prev = current_seg;
     new_seg->next = current_seg->next;
-    current_seg->next->prev = new_seg;
     current_seg->next = new_seg;
+
+    return new_seg;
 }
 
 // 假设你在全局有：DiskTagSegment* disk_head[MAX_DISK_NUM] 表示每个磁盘的环形链表头
@@ -457,7 +422,7 @@ DiskTagSegment *find_tag_segment(int disk_id, int tag_id)
     return nullptr;
 }
 
-DiskTagSegment *find_tag_gap_max(int disk_id, int size)
+DiskTagSegment *find_tag_gap_max(int disk_id)
 {
     // 获取该磁盘的链表头
     DiskTagSegment *head = disk_head[disk_id];
@@ -490,87 +455,35 @@ void allocate_space_per_tag(int tags_per_disk)
     // 当前每个磁盘的写入位置指针（用于确定 start_index 和 end_index）
     int disk_pos[MAX_DISK_NUM] = {0};
 
-    for (int tag_id = 1; tag_id <= M; ++tag_id)
-    {
-        int replica = 1; // 第几个副本
+    // M=标签总数, N=磁盘总数, 每个标签3个副本
+    // tag_disk_info[i].disk_unit[r] 表示"标签i、第r个副本"存在哪个磁盘
+    for (int tag_id = 1; tag_id <= M; tag_id++) {
+        for (int replica = 1; replica <= 3; replica++) {
+            // 计算磁盘编号
+            int disk_id = ((tag_id - 1) * 3 + (replica - 1)) % N + 1;
 
-        for (int disk_id = 1; replica <= 3 && disk_id <= N; ++disk_id)
-        {
-            if (disk_tag_count[disk_id] < tags_per_disk) // 该磁盘的标签数如果没有超过限定最大数
-            {
-                // 分配该副本给 disk_id
-                tag_disk_info[tag_id].disk_unit[replica] = disk_id; // 不减去一，就从一开始
+            tag_disk_info[tag_id].disk_unit[replica] = disk_id;//记录下来
 
-                // 分配空间段
-                int start_index = disk_pos[disk_id] + 1; // 最开始的就是1
-                tag_disk_info[tag_id].disk_start[replica] = start_index;
+            int start_index = disk_pos[disk_id] + 1; // 最开始的就是1
+            tag_disk_info[tag_id].disk_start[replica] = start_index;//TODO 可以优化，这个没用上
 
-                // 新建一个磁盘段
-                DiskTagSegment *new_seg = new DiskTagSegment(tag_id, start_index, start_index, space_per_tag - 1); // 现在的end就是start，gap就是end和下一个start中间还能插入几个
-                // 将新段插入该磁盘的环形链表
-                insert_segment(disk_id, new_seg);
-
-                // 更新指针
-                disk_tag_count[disk_id]++;
-                disk_pos[disk_id] = (disk_pos[disk_id] + space_per_tag - 1) % V;
-                replica++;
+            int end_index=start_index-1;
+            if(end_index<1){
+                end_index=V;
             }
+            // 新建一个磁盘段
+            DiskTagSegment *new_seg = new DiskTagSegment(tag_id, start_index, end_index, space_per_tag - 1); // 现在的end就是start，gap就是end和下一个start中间还能插入几个
+            // 将新段插入该磁盘的环形链表
+            insert_segment(disk_id, new_seg);
+
+            // 更新指针
+            disk_seg_tag_count[disk_id]++;
+            disk_pos[disk_id] = disk_pos[disk_id] + space_per_tag - 1;
         }
     }
 }
 
-// void initialize_tag_id_next(int tags_per_disk)
-// {
-//     // TODO:由于我向上取整了，最后可能会空两个或者多少的连续块没有填，可以用于应对突发情况
-//     //  TODO：不过由这里的逻辑会接入第一块又构成循环,逻辑倒是没有问题了
-//     // 遍历每个磁盘
-//     for (int disk_id = 1; disk_id <= N; ++disk_id)
-//     {
-//         int last_tag_index = -1;  // 记录上一个有效标签的索引
-//         int first_tag_index = -1; // 记录第一个有效标签的索引
-//         // 遍历每个标签
-//         for (int i = 1; i <= M; ++i)
-//         {
-//             if (disk_tag_info[disk_id][i].tag_id != 0) // 如果当前标签有效
-//             {
-//                 // 如果不是第一个有效标签，则更新前一个标签的next指针
-//                 if (last_tag_index != -1)
-//                 {
-//                     disk_tag_info[disk_id][last_tag_index].tag_id_next = disk_tag_info[disk_id][i].tag_id;
-//                     disk_tag_info[disk_id][i].tag_id_prev = disk_tag_info[disk_id][last_tag_index].tag_id;
-//                 }
 
-//                 // 如果是第一个有效标签，记录它
-//                 if (first_tag_index == -1)
-//                 {
-//                     first_tag_index = i;
-//                 }
-
-//                 // 更新最后一个有效标签的索引
-//                 last_tag_index = i;
-//             }
-//         }
-
-//         // 循环设置最后一个标签的下一块标签为第一个有效标签
-//         if (last_tag_index != -1 && first_tag_index != -1)
-//         {
-//             disk_tag_info[disk_id][last_tag_index].tag_id_next = disk_tag_info[disk_id][first_tag_index].tag_id;
-//             disk_tag_info[disk_id][first_tag_index].tag_id_prev = disk_tag_info[disk_id][last_tag_index].tag_id;
-//         }
-//     }
-// }
-
-int available_place(int a, int b, int V)
-{ // ab是磁盘中的点//V是单个磁盘的总块数//计算的是gap哦,在从小到大顺序下a在b前
-    if (a <= b)
-    {
-        return b - a - 1;
-    }
-    else
-    {
-        return V - a + b - 1;
-    }
-}
 
 stack<DiskTagSegment *> build_segment_stack(int disk_id, int tag)
 {
@@ -594,7 +507,7 @@ stack<DiskTagSegment *> build_segment_stack(int disk_id, int tag)
     return seg_stack;
 }
 
-void do_object_write(int *object_unit, DiskTagSegment *disk_head, int *disk_unit, int size, int object_id, int tag, int disk_num, int replica_num, int tags_per_disk)
+void do_object_write(int *object_unit, DiskTagSegment *disk_head, Disk *disk_unit, int size, int object_id, int tag, int disk_num, int replica_num, int tags_per_disk)
 {
     // int start_index = disk_tag_info[disk_num][tag].start_index;//标签的起始位置
     // int end_index= disk_tag_info[disk_num][tag].usage_end_index;//标签存储的结束位置
@@ -621,24 +534,28 @@ void do_object_write(int *object_unit, DiskTagSegment *disk_head, int *disk_unit
     int written_count = 0;
 
     // 直接拿到栈
+    //TODO 判断对象的大小，大的就加到尾部，小的就填补空隙
     stack<DiskTagSegment *> seg_stack = build_segment_stack(disk_num, tag);
+    DiskTagSegment *pos_seg;
 
     while (!seg_stack.empty() && need_write > 0)
     {
         DiskTagSegment *now_seg = seg_stack.top();
+        pos_seg = now_seg;
         seg_stack.pop();
 
         // 前后都延伸
         while (now_seg->gap > 0 && need_write > 0)
-        {                                                            // TODO:可以扫完一遍之后再更新
-            disk_unit[now_seg->usage_end_index] = object_id;         // 修改磁盘存储状态
-            object_unit[++written_count] = now_seg->usage_end_index; // 对象的存储状态
-            now_seg->usage_end_index++;                              // 更新当前段的数据
-            //!!!要确保环绕，数据合理
+        {            
+            now_seg->usage_end_index++;                                                // TODO:可以扫完一遍之后再更新
             if (now_seg->usage_end_index > V)
             {
                 now_seg->usage_end_index = 1;
             }
+            disk_unit[now_seg->usage_end_index].object_id = object_id;         // 修改磁盘存储状态
+            object_unit[++written_count] = now_seg->usage_end_index; // 对象的存储状态
+            need_write--;
+            //!!!要确保环绕，数据合理
             now_seg->available--;
             now_seg->gap--;
         }
@@ -656,10 +573,34 @@ void do_object_write(int *object_unit, DiskTagSegment *disk_head, int *disk_unit
                 now_seg->start_index = V;
             } // 确保当前存入位置合理
 
-            disk_unit[now_seg->start_index] = object_id;         // 修改磁盘存储状态
+            disk_unit[now_seg->start_index].object_id = object_id;         // 修改磁盘存储状态
             object_unit[++written_count] = now_seg->start_index; // 对象的存储状态
-
+            need_write--;
             now_seg->prev->gap--;
+        }
+
+        if (need_write == 0)
+        {
+            return;
+        }
+
+        int this_pos=now_seg->start_index;
+        int stop=now_seg->usage_end_index+1;
+        if(stop>V){
+            stop=1;
+        }
+        while (this_pos != stop && need_write>0)//如果没有扫到尾部或者没有存满
+        {
+            if(disk_unit[this_pos].object_id==0){//如果有空就存进来
+                disk_unit[this_pos].object_id=object_id;
+                object_unit[++written_count] = this_pos; // 对象的存储状态
+                need_write--;//存完了
+            }
+            //现在我要移动this_pos了
+            this_pos++;
+            if(this_pos>V){
+                this_pos=1;
+            }
         }
 
         if (need_write == 0)
@@ -669,23 +610,82 @@ void do_object_write(int *object_unit, DiskTagSegment *disk_head, int *disk_unit
     }
 
     // 走到这里说明还没满，如果一直不满就一直开新tag
-    while (disk_tag_count[disk_num] < 2 * tags_per_disk && need_write > 0)
+    while (need_write > 0)
     {
-        // 查找所有大于size的gap
-        DiskTagSegment *current_seg = find_tag_gap_max(disk_num, size);
-        if (current_seg->gap < size)
-        {
-            break; // 如果不够存就退出
+        // 从大到小依次查找gap
+        DiskTagSegment *current_seg = find_tag_gap_max(disk_num);
+        pos_seg=current_seg;
+        // 开个新的
+        if(current_seg->gap){
+            DiskTagSegment *new_seg;
+            if(need_write<current_seg->gap){
+                new_seg = insert_middle_segment(disk_num, current_seg, need_write, tag);
+            }else{
+                new_seg = insert_middle_segment(disk_num, current_seg, current_seg->gap, tag);
+            }//TODO 对end和start维护得更仔细
+            
+            //更新对象和磁盘的状态
+            int store_pos = new_seg->start_index;
+            int stop=new_seg->usage_end_index+1;
+            if(stop>V){
+                stop=1;
+            }
+            
+            do{
+                disk_unit[store_pos].object_id = object_id;
+                object_unit[++written_count] = store_pos;
+                store_pos++;
+                need_write--;
+                if(store_pos>V){
+                    store_pos=1;
+                }
+            }while(store_pos!=stop);
+            
+            disk_seg_tag_count[disk_num]++;
+            
+        }else{
+            break;
         }
 
-        // 如果够存的话就开新的
-        insert_middle_segment(disk_id, new_seg);
+        if(need_write==0){
+            return;
+        }
     }
 
-    // 走到这里还没存完，有两种情况1开了新tag但是还是没存完2所有gap都不够存这个对象了
-    // 于是就从当前end的下一位开始环磁盘存储
+    // 走到这里还没存完，只有一种情况，所有gap都不够存这个对象了，所有tag的usage和下一个start都紧贴
+    // 从当前pos_seg的下一个节点开始，把链表中的每一块扫完，填满
+    //TODO 如果后期优化，就存储哪个空隙在哪里开始，连续多少 而且一个对象的块在哪里都存储了，删除的时候可以查找块所在的位置
+    int start_pos=pos_seg->next->start_index;
+    int all_pos=start_pos;
+    bool first_loop = true;
+    while (need_write > 0) {
+        // 若当前位置空，就写
+        if (disk_unit[all_pos].object_id == 0) {
+            disk_unit[all_pos].object_id = object_id;
+            object_unit[++written_count] = all_pos;
+            need_write--;
+            if (need_write <= 0) break;
+        }
+
+        // 前进一个位置
+        all_pos++;
+        if (all_pos > V) {
+            all_pos = 1; // 环绕回磁盘开头
+        }
+
+        // 如果回到起始位置 => 说明一圈写完了
+        if (all_pos == start_pos) {
+            break;
+        }
+    }
+
+    if(need_write){
+        throw std::runtime_error("错误：磁盘 " + std::to_string(disk_num) + " 没有位置");
+    }
+
 }
 
+//!!!检查环绕
 void write_action(int tags_per_disk)
 {
     int n_write;
@@ -711,17 +711,22 @@ void write_action(int tags_per_disk)
                 printf("Error: allocate disks\n");
             }
             disk_available[disk_num] -= size;
-            object->is_used_disk[disk_num] = true;
+            object[id].is_used_disk[disk_num] = true;
+
 
             // 为对象分配存储空间
             object[id].unit[j] = static_cast<int *>(calloc(size + 5, sizeof(int))); // 从1开始存，存到size，把每个都初始化为0
             object[id].size = size;
             object[id].is_delete = false;
 
+            //更新该标签有没有存储到新磁盘上//TODO 维护每个磁盘上该标签的对象总数,这样就可以更富集了
+            tag_disk_have_stored[tag][disk_num]=true;//TODO 删除的时候可能需要维护一下
+
             // 使用新方法查找最佳存储空间
             // int start_index = tag_disk_info[tag].disk_start[j-1];       // 从标签分配信息中获取起始索引
             // int end_index = tag_disk_info[tag].disk_start[j-1] + N * V / (M * 3); // TODO: 使用邻居的start_index
-            do_object_write(object[id].unit[j], disk[disk_num], size, id, tag, disk_num, j);
+            //int *object_unit, DiskTagSegment *disk_head, int *disk_unit, int size, int object_id, int tag, int disk_num, int replica_num, int tags_per_disk
+            do_object_write(object[id].unit[j], disk_head[disk_num], disk[disk_num], size, id, tag, disk_num, j, tags_per_disk);
         }
 
         printf("%d\n", id);
@@ -762,37 +767,91 @@ int get_most_req_tag(int disk_id)
 // TODO:获取最多请求的位置
 int get_most_req_position(int disk_id, int tag)
 {
-    int window_size = 100;
-    int window_num = V / window_size + 1;
-    int req_window[V] = {0};
-    int max_requests = 0;
-    intt max_window;
-    for (int i = 0; i < window_num - 1; i++)
+    // 获取磁盘的标签段链表头
+    DiskTagSegment *head = disk_head[disk_id];
+    if (!head)
     {
-        for (int j = 0; j < window_size; j++)
-        {
-            if (disk[disk_id][i * window_size + j].pending_requests != 0)
-            {
-                req_window[i]++;
-                if (req_window[i] > max_requests)
-            }
-        }
+        // 如果磁盘上没有任何标签段，返回 -1
+        return 0;
     }
-    int most_req_position = 0;
-    for (int i = 1; i <= V; i++)
-    {
-        int pos = (disk_point[disk_id] + i - 1) % V + 1; // 循环遍历磁盘存储单元
-        int obj_id = disk[disk_id][pos].object_id;
 
-        // 如果当前位置有对象且标签匹配
-        if (obj_id != 0 && object[obj_id].tag == tag)
+    // 遍历链表，查找指定标签
+    DiskTagSegment *current = head;
+    do
+    {
+        if (current->tag_id == tag)
         {
-            most_req_position = pos;
-            break;
+            // 找到指定标签，返回其起始位置
+            return current->start_index;
         }
-    }
-    // 如果无请求,返回0
-    return most_req_position;
+        current = current->next;
+    } while (current != head);
+
+    // 如果未找到指定标签，返回 -1
+    return 0;
+    // int window_size = 100;
+    // int window_num = V / window_size + 1;
+    // int max_requests = 0;
+    // int max_window = 0;
+    // int max_position = 0;
+    // for (int i = 0; i < window_num - 1; i++)
+    // {
+    //     int req_win = 0;
+    //     for (int j = 1; j <= window_size; j++)
+    //     {
+    //         if (disk[disk_id][i * window_size + j].pending_requests != 0)
+    //         {
+    //             req_win++;
+    //             if (req_win > max_requests)
+    //             {
+    //                 max_requests = req_win;
+    //                 max_window = i;
+    //             }
+    //         }
+    //     }
+    // }
+
+    // int req_win = 0;
+    // for (int j = (window_num - 1) * window_size + 1; j <= V; j++)
+    // {
+    //     if (disk[disk_id][j].pending_requests != 0)
+    //     {
+    //         req_win++;
+    //         if (req_win > max_requests)
+    //         {
+    //             max_requests = req_win;
+    //             max_window = window_num;
+    //         }
+    //     }
+    // }
+
+    // for (int j = max_window * window_size + 1; j <= (max_window + 1) * window_size; j++)
+    // {
+    //     if (disk[disk_id][j].pending_requests != 0)
+    //     {
+    //         max_position = j;
+    //         break;
+    //     }
+    // }
+
+    // return max_position;
+    // 注意: 爷爷手写，可能有bug
+
+    // int most_req_position = 0;
+    // for (int i = 1; i <= V; i++)
+    // {
+    //     int pos = (disk_point[disk_id] + i - 1) % V + 1; // 循环遍历磁盘存储单元
+    //     int obj_id = disk[disk_id][pos].object_id;
+
+    //     // 如果当前位置有对象且标签匹配
+    //     if (obj_id != 0 && object[obj_id].tag == tag)
+    //     {
+    //         most_req_position = pos;
+    //         break;
+    //     }
+    // }
+    // // 如果无请求,返回0
+    // return most_req_position;
 }
 
 // 磁头跳跃,磁头disk_id跳跃到的存储单元编号,0表示不执行jump
@@ -855,12 +914,6 @@ void update_request_status(int request_id, int block_id, int object_size)
             {
                 tag_disk_request_count[tag][disk_id]--;
             }
-            // TODO:更新,更好的?
-            for (int j = 1; j <= object[object_id].size; j++)
-            {
-                int position = object[object_id].unit[i][j];
-                disk[disk_id][position].pending_requests--; // 减少待读取数目
-            }
         }
     }
 }
@@ -882,43 +935,13 @@ int get_earliest_request(int object_id, int block_id)
 int get_next_read_position(int disk_id)
 {
     int current_position = disk_point[disk_id];
-    for (int pos = current_position + 1; pos <= MAX_DISK_SIZE; ++pos)
-    {
-        if (pos > V)
-        {
-            pos = 1;
-        }
-        int obj_id = disk[disk_id][pos].object_id;
-        // 如果当前位置有对象
-        if (obj_id != 0)
-        {
-
-            int rep_id = 0, block_id = 0;
-            for (int i = 1; i <= REP_NUM; i++)
-            {
-                if (object[obj_id].replica[i] == disk_id)
-                {
-                    rep_id = i;
-                    break;
-                }
-            }
-            for (int i = 1; i <= object[obj_id].size; i++)
-            {
-                if (object[obj_id].unit[rep_id][i] == disk_point[disk_id])
-                {
-                    block_id = i;
-                    break;
-                }
-            }
-            int request_id = get_earliest_request(obj_id, block_id);
-            // 如果当前位置有请求
-            if (request_id != 0)
-            {
-                return pos;
-            }
+    for(int i=1;i<=V;i++){
+        int pos = (current_position+i-1)%V;
+        if(disk[disk_id][pos].pending_requests!=0){
+            return pos;
         }
     }
-    return current_position; // 如果没有找到未完成的请求，返回当前位置
+    return 0;
 }
 
 // read的消耗
@@ -932,22 +955,9 @@ int read_consume(int disk_id)
     return std::max(16, ceilValue);
 }
 
-// // TODO:优化pass_read_decision
-// //  确定执行多少次pass和read,并更新action和times,确保left_G足够
-// // magic number :10
-// void pass_read_decision(int disk_id, int &action, int &times, int left_G)
-// {
-//     int next_read_position= get_next_read_position(disk_id);
-//     if(next_read_position-disk_point[disk_id]>10){
-//         action = PASS;
-//         times = next_read_position-disk_point[disk_id]-1;
-//         return;
-//     }else{
-//         action = READ;
-//         times = 1;
-//         return;
-//     }
-// }
+// TODO:优化pass_read_decision
+//  确定执行多少次pass和read,并更新action和times,确保left_G足够
+// magic number :10
 void pass_read_decision(int disk_id, int &action, int &times, int left_G)
 {
     int next_read_position = get_next_read_position(disk_id);
@@ -977,14 +987,50 @@ void pass_read_decision(int disk_id, int &action, int &times, int left_G)
     if (distance_to_next_position > dynamic_threshold)
     {
         action = PASS;
-        times = distance_to_next_position - 1; // 尽可能跳过，但留一个位置进行读取
-    }
-    else
-    {
+        times = next_read_position-disk_point[disk_id]-1;
+        return;
+    }else{
         action = READ;
-        times = 1; // 在当前位置执行读取操作
+        times = 1;
+        return;
     }
 }
+// void pass_read_decision(int disk_id, int &action, int &times, int left_G)
+// {
+//     int next_read_position = get_next_read_position(disk_id);
+//     int distance_to_next_position = (next_read_position - disk_point[disk_id] + V) % V;
+//     int req = disk[disk_id][disk_point[disk_id]].pending_requests;
+//     if (req > 0)
+//     {
+//         action = READ;
+//         times = 1;
+//         return;
+//     }
+//     // 动态计算跳过的阈值
+//     int dynamic_threshold = 10; // 默认阈值
+//     if (left_G > 0.8 * G)
+//     {
+//         // 如果剩余令牌较多，可以跳过更多的存储单元
+//         dynamic_threshold = 20;
+//     }
+//     else if (left_G < 0.2 * G)
+//     {
+//         // 如果剩余令牌较少，则跳过的阈值应更小
+//         dynamic_threshold = 5;
+//     }
+
+//     // 如果到下一个读取位置的距离大于动态阈值，我们选择PASS
+//     if (distance_to_next_position > dynamic_threshold)
+//     {
+//         action = PASS;
+//         times = distance_to_next_position - 1; // 尽可能跳过，但留一个位置进行读取
+//     }
+//     else
+//     {
+//         action = READ;
+//         times = 1; // 在当前位置执行读取操作
+//     }
+// }
 
 // 模拟连续读取策略与跳过策略的令牌消耗
 int evaluate_token_consumption(int disk_id)
@@ -1034,6 +1080,7 @@ void read(int disk_id, int &left_G, int &n_request_complete, std::vector<int> &r
 {
     if (read_consume(disk_id) <= left_G && disk[disk_id][disk_point[disk_id]].pending_requests > 0)
     {
+
         int obj_id = disk[disk_id][disk_point[disk_id]].object_id;
         int rep_id = 0, block_id = 0;
         for (int i = 1; i <= REP_NUM; i++)
@@ -1052,8 +1099,21 @@ void read(int disk_id, int &left_G, int &n_request_complete, std::vector<int> &r
                 break;
             }
         }
+
         int request_id = get_earliest_request(obj_id, block_id);
+        if(request_id==0){
+            pass(disk_id, left_G);
+            return;
+        }
+        // 更新请求状态
+        for (int i = 1; i <= REP_NUM; i++)
+        {
+            int disk_id = object[obj_id].replica[i];
+            disk[disk_id][object[obj_id].unit[i][block_id]].pending_requests--;
+        }
+
         update_request_status(request_id, block_id, object[obj_id].size);
+
         if (request[request_id].is_done)
         {
             n_request_complete++;
@@ -1125,7 +1185,7 @@ void disk_move(int disk_id, int &n_request_complete, std::vector<int> &request_c
             else
             {
                 read(disk_id, left_G, n_request_complete, request_complete);
-            }
+            }//TODO:stop
         }
     }
     printf("#\n");
