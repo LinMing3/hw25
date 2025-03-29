@@ -240,53 +240,31 @@ void initialize_disks()
 // 简单模拟(前后10个格子中出现次数最多的tag)
 int get_tag(int disk_id, int pos)
 {
-    // 定义一个数组来统计标签的出现次数
-    int tag_count[MAX_TAG] = {0};
-
-    // 遍历周围 10 个格子
-    for (int i = -5; i <= 5; i++)
+    // 获取磁盘的标签段链表头
+    DiskTagSegment *head = disk_head[disk_id];
+    if (!head)
     {
-        int current_pos = pos + i;
-
-        // 处理循环边界
-        if (current_pos < 1)
-        {
-            current_pos += V; // 回绕到磁盘末尾
-        }
-        else if (current_pos > V)
-        {
-            current_pos -= V; // 回绕到磁盘开头
-        }
-
-        // 获取当前位置的对象 ID
-        int obj_id = disk[disk_id][current_pos].object_id;
-
-        // 如果当前位置为空（blank），跳过
-        if (obj_id == 0)
-        {
-            continue;
-        }
-
-        // 获取对象的标签
-        int tag = object[obj_id].tag;
-
-        // 增加标签的计数
-        tag_count[tag]++;
+        // 如果磁盘上没有任何标签段，返回 0 表示空白
+        return 0;
     }
 
-    // 找到计数最多的标签
-    int most_frequent_tag = 0;
-    int max_count = 0;
-    for (int tag = 1; tag <= M; tag++)
+    // 遍历链表，查找包含 pos 的段
+    DiskTagSegment *current = head;
+    do
     {
-        if (tag_count[tag] > max_count)
+        // 检查 pos 是否在当前段范围内
+        if ((current->start_index <= current->usage_end_index &&
+             pos >= current->start_index && pos <= current->usage_end_index) ||
+            (current->start_index > current->usage_end_index &&
+             (pos >= current->start_index || pos <= current->usage_end_index)))
         {
-            max_count = tag_count[tag];
-            most_frequent_tag = tag;
+            return current->tag_id; // 返回段的标签 ID
         }
-    }
+        current = current->next;
+    } while (current != head);
 
-    return most_frequent_tag;
+    // 如果未找到，返回 0 表示空白
+    return 0;
 }
 
 // TODO:选择空余空间最多的磁盘，加入标签链表的连续位置，并且修改有哪些tag存放的磁盘
@@ -862,25 +840,12 @@ int jump_to(int disk_id)
     int most_req_tag = get_most_req_tag(disk_id);
     int most_req_position = get_most_req_position(disk_id, most_req_tag);
     // 如果无请求,返回0
-    if (most_req_tag == 0 || most_req_position == 0)
+    if (most_req_tag == 0 || most_req_position == 0|| pos_tag == most_req_tag)
     {
         return 0;
     }
-
-    if (pos_tag) // 如果当前位置是tag
-    {
-        // 如果当前位置的tag不是最多请求的tag,且距离最多请求的tag的距离大于G
-        if (pos_tag != most_req_tag && (most_req_position - pos_tag + V) % V > G)
-        {
-            return most_req_position;
-        }
-    }
-    else // 如果当前位置是blank
-    {
-        if ((most_req_position - pos_tag + V) % V > G)
-        {
-            return most_req_position;
-        }
+    if ((most_req_position - pos_tag + V) % V > G){
+        return most_req_position;
     }
     return 0;
 }
@@ -960,77 +925,55 @@ int read_consume(int disk_id)
 // magic number :10
 void pass_read_decision(int disk_id, int &action, int &times, int left_G)
 {
-    int next_read_position = get_next_read_position(disk_id);
-    int distance_to_next_position = (next_read_position - disk_point[disk_id] + V) % V;
-    int req = disk[disk_id][disk_point[disk_id]].pending_requests;
-    if (req > 0)
+    int read_consume_value = read_consume(disk_id);
+    if (read_consume_value <= left_G)
     {
         action = READ;
         times = 1;
         return;
     }
-
-    // 动态计算跳过的阈值
-    int dynamic_threshold = 10; // 默认阈值
-    if (left_G > 0.8 * G)
+    else
     {
-        // 如果剩余令牌较多，可以跳过更多的存储单元
-        dynamic_threshold = 20;
-    }
-    else if (left_G < 0.2 * G)
-    {
-        // 如果剩余令牌较少，则跳过的阈值应更小
-        dynamic_threshold = 5;
-    }
-
-    // 如果到下一个读取位置的距离大于动态阈值，我们选择PASS
-    if (distance_to_next_position > dynamic_threshold)
-    {
-        action = PASS;
-        times = next_read_position-disk_point[disk_id]-1;
-        return;
-    }else{
-        action = READ;
+        action = STOP;
         times = 1;
         return;
     }
+
+    // int next_read_position = get_next_read_position(disk_id);
+    // int distance_to_next_position = (next_read_position - disk_point[disk_id] + V) % V;
+    // int req = disk[disk_id][disk_point[disk_id]].pending_requests;
+    // if (req > 0)
+    // {
+    //     action = READ;
+    //     times = 1;
+    //     return;
+    // }
+
+    // // 动态计算跳过的阈值
+    // int dynamic_threshold = 10; // 默认阈值
+    // if (left_G > 0.8 * G)
+    // {
+    //     // 如果剩余令牌较多，可以跳过更多的存储单元
+    //     dynamic_threshold = 20;
+    // }
+    // else if (left_G < 0.2 * G)
+    // {
+    //     // 如果剩余令牌较少，则跳过的阈值应更小
+    //     dynamic_threshold = 5;
+    // }
+
+    // // 如果到下一个读取位置的距离大于动态阈值，我们选择PASS
+    // if (distance_to_next_position > dynamic_threshold)
+    // {
+    //     action = PASS;
+    //     times = next_read_position-disk_point[disk_id]-1;
+    //     return;
+    // }else{
+    //     action = READ;
+    //     times = 1;
+    //     return;
+    // }
 }
-// void pass_read_decision(int disk_id, int &action, int &times, int left_G)
-// {
-//     int next_read_position = get_next_read_position(disk_id);
-//     int distance_to_next_position = (next_read_position - disk_point[disk_id] + V) % V;
-//     int req = disk[disk_id][disk_point[disk_id]].pending_requests;
-//     if (req > 0)
-//     {
-//         action = READ;
-//         times = 1;
-//         return;
-//     }
-//     // 动态计算跳过的阈值
-//     int dynamic_threshold = 10; // 默认阈值
-//     if (left_G > 0.8 * G)
-//     {
-//         // 如果剩余令牌较多，可以跳过更多的存储单元
-//         dynamic_threshold = 20;
-//     }
-//     else if (left_G < 0.2 * G)
-//     {
-//         // 如果剩余令牌较少，则跳过的阈值应更小
-//         dynamic_threshold = 5;
-//     }
-
-//     // 如果到下一个读取位置的距离大于动态阈值，我们选择PASS
-//     if (distance_to_next_position > dynamic_threshold)
-//     {
-//         action = PASS;
-//         times = distance_to_next_position - 1; // 尽可能跳过，但留一个位置进行读取
-//     }
-//     else
-//     {
-//         action = READ;
-//         times = 1; // 在当前位置执行读取操作
-//     }
-// }
 
 // 模拟连续读取策略与跳过策略的令牌消耗
 int evaluate_token_consumption(int disk_id)
@@ -1139,8 +1082,10 @@ void read(int disk_id, int &left_G, int &n_request_complete, std::vector<int> &r
 // 磁头移动
 void disk_move(int disk_id, int &n_request_complete, std::vector<int> &request_complete)
 {
+    //TODO:打分策略，选择分最高?/读取次数最多?/消耗G最少的磁头移动策略
+
     int left_G = G; // 剩余令牌数
-    // 为了避免磁头在一个tag内多次跳跃，设置一个标志位
+    //TODO:为了避免磁头在一个tag内多次跳跃，设置一个标志位，表示是否可以跳跃
     static bool ready_to_jump = true;
     // 尝试执行 Jump 动作
     if (ready_to_jump)
@@ -1158,16 +1103,16 @@ void disk_move(int disk_id, int &n_request_complete, std::vector<int> &request_c
         }
     }
 
-    // 循环处理 Pass,直到到达tag
-    while (left_G > 0 && !get_tag(disk_id, disk_point[disk_id]))
+    // 循环处理 Pass,直到到达请求
+    while (left_G > 0 && disk[disk_id][disk_point[disk_id]].pending_requests>0)
     {
-        // 执行动作,并更新left_G,n_request_complete,request_complete
         pass(disk_id, left_G);
-        // ready_to_jump = false;
     }
 
+    //TODO:实现stop逻辑
+    bool stop = false;
     // 循环处理 Pass 和 Read 动作，直到令牌耗尽
-    while (left_G > 0)
+    while (left_G > 0 && !stop)
     {
         int action;
         int times;
@@ -1182,10 +1127,14 @@ void disk_move(int disk_id, int &n_request_complete, std::vector<int> &request_c
             {
                 pass(disk_id, left_G);
             }
-            else
+            else if(action== READ)
             {
                 read(disk_id, left_G, n_request_complete, request_complete);
-            }//TODO:stop
+            }else
+            {   
+                stop = true;
+                break;
+            }
         }
     }
     printf("#\n");
@@ -1204,6 +1153,7 @@ void initialize_request(int request_id, int object_id, int object_size)
     for (int i = 1; i <= REP_NUM; i++)
     {
         int disk_id = object[object_id].replica[i];
+        //TODO:count对象数or请求数
         tag_disk_request_count[object[object_id].tag][object[object_id].replica[i]]++;
         for (int j = 1; j <= object_size; j++)
         {
@@ -1227,10 +1177,20 @@ void read_action()
         initialize_request(request_id, object_id, object[object_id].size);
     }
 
-    int n_rsp = 0;
-    std::vector<int> rsp_id;
+    int n_rsp = 0; //统计请求完成数目
+    std::vector<int> rsp_id; //统计请求完成id
     rsp_id.push_back(0);
 
+
+    std::vector<string> disk_action(N + 1, ""); // 记录每个磁头的动作
+    disk_action[0] = "0"; // 磁头编号从1开始
+    for(int i = 1; i <= N; i++)
+    {
+        jump_to(i);
+    }
+
+
+    //TODO:每个磁头按顺序移动,可以改成并行移动,一人动一下
     // 每个磁头的运动输出
     for (int i = 1; i <= N; i++)
     {
